@@ -34,16 +34,18 @@ load_dotenv()
 
 
 OPENAI_API_KEY = os.getenv("OPEN_API_KEY")
+
 DB_CONFIG = {
-    "user": os.getenv("DB_USER", "postgres"),
-    "password": os.getenv("DB_PASS", "postgres"),
-    "database": os.getenv("DB_NAME", "powpow"),
+    "user": os.getenv("DB_USER", "powellHomeSchool"),
+    "password": os.getenv("DB_PASS", "@powe!!HomeSchool2025"),
+    "database": os.getenv("DB_NAME", "powellHomeSchool"),
     "host": os.getenv("DB_HOST", "localhost"),
     "port": int(os.getenv("DB_PORT", "5437")),
 }
 
 
 MASTER_KEY = os.getenv("MASTER_API_KEY", "")
+db_tables: dict[str, Database] = {}
 
 
 # Initialize FastAPI and GPTManager
@@ -65,15 +67,20 @@ DB_CONFIG = {
     "password": os.getenv("DB_PASS", "postgres"),
     "database": os.getenv("DB_NAME", "powellhomeschool"),
     "host": os.getenv("DB_HOST", "localhost"),
-    "port": int(os.getenv("DB_PORT", "5432")),
+    "port": int(os.getenv("DB_PORT", "5438")),
 }
 
 
 
 @app.on_event("startup")
 async def startup():
-    global db_pool
+    global db_pool, db_tables
     db_pool = await asyncpg.create_pool(**DB_CONFIG)
+
+    for suffix in ["", "_pdf", "_urls"]:
+        table = f"powellhomeschool{suffix}"
+        db_tables[table] = Database(DB_CONFIG, api_key=OPENAI_API_KEY, table_name=table)
+
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -97,27 +104,14 @@ def is_valid_token(client_token: str) -> bool:
 
 
 PERSONA_MAP = {
-    "aaf": (
-        "You are an assistant representing the Amarillo Area Foundation. "
-        "Answer **only** using the context provided. "
-        "Do **not** respond to questions that are not directly related to the Amarillo Area Foundation. "
-        "If the answer is not in the supplied data, respond with: "
-        "\"I can only answer based on the data from the Amarillo Area Foundation.\""
-    ),
-    "lcra": (
-        "You are an assistant for the Lower Colorado River Authority (LCRA). "
-        "Use **only** the provided context to answer. "
-        "Do **not** discuss topics unrelated to LCRA. "
-        "If a question is outside LCRA's domain, respond with: "
-        "\"I can only respond based on LCRA data provided in the current context.\""
-    ),
-    "kelow": (
-        "You are an assistant for the City of Kelowna. "
-        "Use **only** the provided context to answer. "
-        "Do **not** discuss topics unrelated to Kelowna. "
-        "If a question is outside Kelowna's domain, respond with: "
-        "\"I can only respond based on Kelowna data provided in the current context.\""
+    "powellhomeschool": (
+        "You are an educational assistant for Powell HomeSchool. "
+        "Use only the provided learning materials to answer questions. "
+        "Do not guess or respond outside the scope of Powell HomeSchool content. "
+        "If no relevant data is found, say: "
+        "\"I can only respond based on Powell HomeSchool’s materials.\""
     )
+
 }
 
 MODEL_TOKEN_LIMITS = {
@@ -146,9 +140,10 @@ class QueryRequest(BaseModel):
     company: str = ""
     model: str = ""
 
+
 @app.post("/ask")
 async def ask_question(req: QueryRequest, request: Request):
-    tableName = request.headers.get("table")
+    tableName = "powellHomeSchool"
     token = request.headers.get("x-chat-token")
     username = request.headers.get("username")
     entity_key = request.headers.get("entity_key")
@@ -157,6 +152,9 @@ async def ask_question(req: QueryRequest, request: Request):
         raise HTTPException(status_code=403, detail="Invalid or expired token")
     if not username or not entity_key:
         raise HTTPException(status_code=400, detail="Missing username or entity_key")
+
+    if entity_key != "powellHomeSchool":
+        raise HTTPException(status_code=403, detail="Unauthorized entity")
 
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow(
@@ -167,8 +165,6 @@ async def ask_question(req: QueryRequest, request: Request):
 
         if not user_row:
             raise HTTPException(status_code=404, detail="User not found")
-        if user_row["query_count"] >= 25:
-            raise HTTPException(status_code=405, detail="Query limit reached (25)")
 
         user_id = user_row["id"]
         provider = req.company.lower()
@@ -179,30 +175,34 @@ async def ask_question(req: QueryRequest, request: Request):
         try:
             all_context = []
 
-            async def fetch_results(table):
+            async def fetch_results(table: str):
+                db = db_tables.get(table)
+                if not db:
+                    logger.warning(f"No DB handler found for table '{table}'")
+                    return []
                 try:
-                    db = Database(DB_CONFIG, api_key=OPENAI_API_KEY, table_name=table)
-
                     return await db.search_query(req.question, column_names=["title", "text"], top_n=10)
                 except Exception as e:
                     logger.warning(f"Search failed for table '{table}': {e}")
                     return []
 
-            main_results = await fetch_results(tableName)
-            all_context.extend(main_results)
+            # Prepare main + suffix tables
+            search_tables = [tableName]
 
-            tasks = []
             for suffix in ["_pdf", "_urls"]:
                 sub_table = f"{tableName}{suffix}"
                 exists = await conn.fetchval(
                     "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)", sub_table
                 )
                 if exists:
-                    tasks.append(fetch_results(sub_table))
+                    search_tables.append(sub_table)
 
-            sub_results_all = await gather(*tasks)
-            for sub_results in sub_results_all:
-                all_context.extend(sub_results)
+            # Run all searches in parallel
+            search_tasks = [fetch_results(table) for table in search_tables]
+            all_results = await gather(*search_tasks)
+
+            for result in all_results:
+                all_context.extend(result)
 
             combined_context = "\n\n".join(
                 f"{row.get('title', '')}\n{row.get('text', '')}" for row in all_context if 'text' in row
@@ -220,34 +220,19 @@ async def ask_question(req: QueryRequest, request: Request):
         end_time = time.monotonic()
         print(f"⏱️ DB search for /ask took {round((end_time - start_time) * 1000)} ms")
 
-        try:
-            if provider == "llama":
-                response = await ai.assistant_Llama.ask(
-                    query=req.question,
-                    context_for_prompt=combined_context,
-                    persona=PERSONA_MAP.get(tableName),
-                    model=model,
-                    memory=[]
-                )
-            else:
-                response = await ai.ask(
-                    query=req.question,
-                    context_for_prompt=combined_context,
-                    persona=PERSONA_MAP.get(tableName),
-                    model=model,
-                    memory=[]
-                )
 
-            await conn.execute("UPDATE users SET query_count = query_count + 1 WHERE id = $1", user_id)
-            return {"response": response}
+        response = await ai.ask(
+            query=req.question,
+            context_for_prompt=combined_context,
+            persona=PERSONA_MAP.get(tableName),
+            model=model,
+            memory=[]
+        )
+
+        await conn.execute("UPDATE users SET query_count = query_count + 1 WHERE id = $1", user_id)
+        return {"response": response}
 
 
-        except Exception as e:
-            logger.error(f"❌ AI model error: {str(e)}")
-            return JSONResponse(
-                status_code=407,
-                content={"error": "The selected model is not available or supported. Please try another model."}
-            )
 
 
 @app.post("/ask/pdf")
