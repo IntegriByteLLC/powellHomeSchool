@@ -2,17 +2,19 @@ version: "3.9"
 
 services:
   postgres:
-    image: postgres:16
+    image: ankane/pgvector:latest
     container_name: powell_postgres
     restart: unless-stopped
     ports:
-      - "5438:5432"
+      - "7894:5432"
     environment:
-      POSTGRES_USER: powellHomeSchool
-      POSTGRES_PASSWORD: "@powe!!HomeSchool2025"
-      POSTGRES_DB: powellHomeSchool
+      POSTGRES_USER: powellhomeschool
+      POSTGRES_PASSWORD: "@powe!!homeschool2025"
+      POSTGRES_DB: powellhomeschool
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+
 
   redis:
     image: redis:8
@@ -20,7 +22,6 @@ services:
     restart: unless-stopped
     ports:
       - "6379:6379"
-    command: redis-server --appendonly yes
 
 volumes:
   postgres_data:

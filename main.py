@@ -10,7 +10,7 @@ from asyncio import gather
 from io import BytesIO
 from tempfile import NamedTemporaryFile
 from typing import List
-
+import jwt
 from PyPDF2 import PdfReader
 from fastapi.logger import logger
 from fastapi.responses import JSONResponse
@@ -34,13 +34,15 @@ load_dotenv()
 
 
 OPENAI_API_KEY = os.getenv("OPEN_API_KEY")
+JWT_SECRET = os.getenv("JWT_SECRET")
+JWT_ALGORITHM = "HS256"
 
 DB_CONFIG = {
-    "user": os.getenv("DB_USER", "powellHomeSchool"),
-    "password": os.getenv("DB_PASS", "@powe!!HomeSchool2025"),
-    "database": os.getenv("DB_NAME", "powellHomeSchool"),
+    "user": os.getenv("DB_USER", "powellhomeschool"),
+    "password": os.getenv("DB_PASS", "@powe!!homeschool2025"),
+    "database": os.getenv("DB_NAME", "powellhomeschool"),
     "host": os.getenv("DB_HOST", "localhost"),
-    "port": int(os.getenv("DB_PORT", "5437")),
+    "port": int(os.getenv("DB_PORT", "7894")),
 }
 
 
@@ -62,13 +64,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_CONFIG = {
-    "user": os.getenv("DB_USER", "postgres"),
-    "password": os.getenv("DB_PASS", "postgres"),
-    "database": os.getenv("DB_NAME", "powellhomeschool"),
-    "host": os.getenv("DB_HOST", "localhost"),
-    "port": int(os.getenv("DB_PORT", "5438")),
-}
 
 
 
@@ -77,9 +72,31 @@ async def startup():
     global db_pool, db_tables
     db_pool = await asyncpg.create_pool(**DB_CONFIG)
 
-    for suffix in ["", "_pdf", "_urls"]:
-        table = f"powellhomeschool{suffix}"
-        db_tables[table] = Database(DB_CONFIG, api_key=OPENAI_API_KEY, table_name=table)
+    TABLE_SUFFIXES = ["", "_pdf", "_urls"]
+    TABLE_SCHEMA = """
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tag TEXT,
+            title TEXT,
+            text TEXT,
+            lookup VECTOR(1536)
+        
+        )
+    """
+
+    async with db_pool.acquire() as conn:
+        for suffix in TABLE_SUFFIXES:
+            table = f"powellhomeschool{suffix}"
+            db_tables[table] = Database(DB_CONFIG, api_key=OPENAI_API_KEY, table_name=table)
+
+            # Auto-create the table if it doesn't exist
+            create_sql = TABLE_SCHEMA.format(table_name=table)
+            try:
+                await conn.execute(create_sql)
+                print(f"✅ Ensured table exists: {table}")
+            except Exception as e:
+                print(f"❌ Failed to create table '{table}': {e}")
+
 
 
 @app.on_event("shutdown")
@@ -92,15 +109,18 @@ def get_current_token() -> str:
     current_hour = str(int(time.time()) // 3600)
     return hmac.new(MASTER_KEY.encode(), current_hour.encode(), hashlib.sha256).hexdigest()
 
-def is_valid_token(client_token: str) -> bool:
-    current_hour = int(time.time()) // 3600
-    for hour in [current_hour - 1, current_hour, current_hour + 1]:
-        valid_token = hmac.new(MASTER_KEY.encode(), str(hour).encode(), hashlib.sha256).hexdigest()
+def verify_token(request: Request):
+    token = request.headers.get("x-chat-token")
+    if not token:
+        raise HTTPException(status_code=403, detail="Missing token")
 
-        if hmac.compare_digest(valid_token, client_token):
-
-            return True
-    return False
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload  # e.g. {'sub': 'user_id', 'email': '...', 'company_id': '...'}
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=403, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=403, detail="Invalid token")
 
 
 PERSONA_MAP = {
@@ -143,96 +163,46 @@ class QueryRequest(BaseModel):
 
 @app.post("/ask")
 async def ask_question(req: QueryRequest, request: Request):
-    tableName = "powellHomeSchool"
-    token = request.headers.get("x-chat-token")
-    username = request.headers.get("username")
-    entity_key = request.headers.get("entity_key")
+    provider = req.company.lower()
+    model = req.model
+    ai = AiManager(provider=provider)
+    start_time = time.monotonic()
 
-    if not token or not is_valid_token(token):
-        raise HTTPException(status_code=403, detail="Invalid or expired token")
-    if not username or not entity_key:
-        raise HTTPException(status_code=400, detail="Missing username or entity_key")
+    table = "powellhomeschool_urls"
+    db = db_tables.get(table)
 
-    if entity_key != "powellHomeSchool":
-        raise HTTPException(status_code=403, detail="Unauthorized entity")
+    combined_context = ""
 
-    async with db_pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            "SELECT id, query_count FROM users WHERE username = $1 AND entity_key = $2",
-            username,
-            entity_key,
-        )
-
-        if not user_row:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        user_id = user_row["id"]
-        provider = req.company.lower()
-        model = req.model
-        ai = AiManager(provider=provider)
-        start_time = time.monotonic()
-
+    if db:
         try:
-            all_context = []
-
-            async def fetch_results(table: str):
-                db = db_tables.get(table)
-                if not db:
-                    logger.warning(f"No DB handler found for table '{table}'")
-                    return []
-                try:
-                    return await db.search_query(req.question, column_names=["title", "text"], top_n=10)
-                except Exception as e:
-                    logger.warning(f"Search failed for table '{table}': {e}")
-                    return []
-
-            # Prepare main + suffix tables
-            search_tables = [tableName]
-
-            for suffix in ["_pdf", "_urls"]:
-                sub_table = f"{tableName}{suffix}"
-                exists = await conn.fetchval(
-                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)", sub_table
+            results = await db.search_query(req.question, column_names=["title", "text"], top_n=10)
+            if results:
+                combined_context = "\n\n".join(
+                    f"{r.get('title', '')}\n{r.get('text', '')}" for r in results if 'text' in r
                 )
-                if exists:
-                    search_tables.append(sub_table)
-
-            # Run all searches in parallel
-            search_tasks = [fetch_results(table) for table in search_tables]
-            all_results = await gather(*search_tasks)
-
-            for result in all_results:
-                all_context.extend(result)
-
-            combined_context = "\n\n".join(
-                f"{row.get('title', '')}\n{row.get('text', '')}" for row in all_context if 'text' in row
-            ) if all_context else ""
-
-            token_limit = MODEL_TOKEN_LIMITS.get(model, MODEL_TOKEN_LIMITS["default"])
-            max_context_tokens = token_limit - 1000
-            if estimate_tokens(combined_context) > max_context_tokens:
-                combined_context = trim_context_to_token_limit(combined_context, max_context_tokens)
-
         except Exception as e:
-            logger.warning(f"Error during search aggregation: {e}")
-            combined_context = ""
+            logger.warning(f"Search failed for table '{table}': {e}")
+    else:
+        logger.warning(f"No DB handler found for table '{table}'")
 
-        end_time = time.monotonic()
-        print(f"⏱️ DB search for /ask took {round((end_time - start_time) * 1000)} ms")
+    # Token trimming
+    token_limit = MODEL_TOKEN_LIMITS.get(model, MODEL_TOKEN_LIMITS["default"])
+    max_context_tokens = token_limit - 1000
+    if estimate_tokens(combined_context) > max_context_tokens:
+        combined_context = trim_context_to_token_limit(combined_context, max_context_tokens)
+    print(f"Combinded text: {combined_context}")
+    end_time = time.monotonic()
+    print(f"⏱️ DB search for /ask took {round((end_time - start_time) * 1000)} ms")
 
+    response = await ai.ask(
+        query=req.question,
+        context_for_prompt=combined_context,
+        persona=PERSONA_MAP.get("powellhomeschool"),
+        model=model,
+        memory=[]
+    )
 
-        response = await ai.ask(
-            query=req.question,
-            context_for_prompt=combined_context,
-            persona=PERSONA_MAP.get(tableName),
-            model=model,
-            memory=[]
-        )
-
-        await conn.execute("UPDATE users SET query_count = query_count + 1 WHERE id = $1", user_id)
-        return {"response": response}
-
-
+    return {"response": response}
 
 
 @app.post("/ask/pdf")
@@ -242,7 +212,7 @@ async def ask_from_pdf(req: QueryRequest, request: Request):
     username = request.headers.get("username")
     entity_key = request.headers.get("entity_key")
 
-    if not token or not is_valid_token(token):
+    if not token or not verify_token(token):
         raise HTTPException(status_code=403, detail="Invalid or expired token")
     if not username or not entity_key:
         raise HTTPException(status_code=400, detail="Missing username or entity_key")
@@ -304,7 +274,9 @@ async def ingest_from_urls(req: Request):
 
     body = await req.json()
     urls = body.get("urls", [])
-    table = req.headers.get("table")
+    table = "powellhomeschool"
+
+    print(f"Urls: {urls}")
     if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
         raise HTTPException(status_code=400, detail="URLs must be a list of strings")
     if not table:
@@ -316,18 +288,7 @@ async def ingest_from_urls(req: Request):
     print(f"📋 Creating table: {new_table_name}")
 
     conn = await asyncpg.connect(**DB_CONFIG)
-    create_sql = f"""
-       CREATE TABLE IF NOT EXISTS {new_table_name} (
-           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-           url TEXT,
-           title TEXT,
-           text TEXT,
-           lookup TEXT,
-           embedding VECTOR(1536)
-       )
-    """
-    await conn.execute(create_sql)
-    await conn.close()
+
     print(f"✅ Table '{new_table_name}' created (or already exists)")
 
     # 🕒 Start timing
@@ -373,9 +334,12 @@ async def ingest_from_urls(req: Request):
 async def ingest_pdf(
     file: UploadFile = File(...),
     table: str = Header(...),
+    title: str = Header(...),
+    tag: str = Header(...),
     user_id: str = Header(None),
     x_chat_token: str = Header(None),
 ):
+
     """
     Endpoint to ingest a PDF file, extract text, chunk it, and store embeddings in the DB.
     """
@@ -403,8 +367,8 @@ async def ingest_pdf(
     # Sanitize table name and prepare record
     table_name = f"{re.sub(r'\\W+', '', table.lower())}_pdf"
     record = {
-        "tag": file.filename,
-        "title": file.filename,
+        "tag":  tag,
+        "title": title,
         "text": extracted_text,
     }
 
