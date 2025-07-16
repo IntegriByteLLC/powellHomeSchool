@@ -16,7 +16,7 @@ class Lesson(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     subject_id = Column(UUID(as_uuid=True), ForeignKey("subjects.id", ondelete="CASCADE"))
     title = Column(String, nullable=False)
-    description = Column(Text)
+    grade = Column(String)
     context = Column(Text)
     order_index = Column(Integer, default=0)
     subject = relationship("Subject", back_populates="lessons")

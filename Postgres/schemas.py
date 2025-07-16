@@ -18,14 +18,14 @@ class QueryRequest(BaseModel):
 class LessonCreate(BaseModel):
     subject_id: UUID
     title: str
-    description: Optional[str] = ""
+    grade: Optional[str] = ""
     context: Optional[str] = ""
     order_index: Optional[int] = 0
 
 class LessonOut(BaseModel):
     id: UUID
     title: str
-    description: Optional[str]
+    grade: Optional[str] = None
     context: Optional[str]
     order_index: int
 
