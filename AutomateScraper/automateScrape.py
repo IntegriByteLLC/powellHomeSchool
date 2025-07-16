@@ -12,25 +12,20 @@ from bs4 import BeautifulSoup
 from powpow.ingestion import DataIngestion
 
 from AutomateScraper.ai_scrape_cleaner import AIScrapeCleaner
+from Postgres.config import Config
 
 # --- Load env vars ---
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPEN_API_KEY")
 
-DB_CONFIG = {
-    "user": os.getenv("DB_USER", "postgres"),
-    "password": os.getenv("DB_PASS", "postgres"),
-    "database": os.getenv("DB_NAME", "powpow"),
-    "host": os.getenv("DB_HOST", "localhost"),
-    "port": int(os.getenv("DB_PORT", "5437")),
-}
+
 
 persona = "You are a professional web content cleaner. Remove all headers, footers, navigation menus, and irrelevant noise like links, cookie popups, social media buttons, and policy disclaimers. Return only the main body content, formatted cleanly."
 
 TABLE_NAME = "lcraTest"
+config = Config()
 
-
-aiCleaner = AIScrapeCleaner(provider='gemini',db_config=DB_CONFIG)
+aiCleaner = AIScrapeCleaner(provider='gemini',db_config=config.DB_CONFIG)
 
 
 # --- Chunker ---
