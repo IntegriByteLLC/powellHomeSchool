@@ -3,13 +3,13 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
 from powpow.database import Database
-from Postgres.Routers import askRouter, pdfRouter, phonicsRouter, urlRouter, lessonRouter
+from Postgres.Routers import askRouter, pdfRouter, phonicsRouter, urlRouter, lessonRouter, usersRoute
 from Postgres.config import config
 
 from Postgres.databaseConnection import get_db_pool, init_db
 
 app = FastAPI()
-db_tables: dict[str, Database] = {}  # Temporary storage for runtime use
+db_tables: dict[str, Database] = {}
 
 
 app.add_middleware(
@@ -59,3 +59,4 @@ app.include_router(urlRouter.router)
 app.include_router(phonicsRouter.router)
 app.include_router(askRouter.router)
 app.include_router(lessonRouter.router)
+app.include_router(usersRoute.router)

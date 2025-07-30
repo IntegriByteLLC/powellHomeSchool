@@ -42,3 +42,11 @@ class AiManager:
             persona=persona,
 
         )
+    async def complete_json(self, prompt: str, max_tokens: int = 600) -> str:
+        return await self.assistant.get_response(
+            query_text=prompt,
+            context_for_prompt="You are a helpful AI tutor that returns JSON formatted flashcards.",
+            model="gemini-2.0-flash",
+            memory=[],
+            persona="educator",
+        )
