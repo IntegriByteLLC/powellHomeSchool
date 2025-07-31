@@ -104,7 +104,7 @@ async def ask_question(req: QueryRequest, request: Request):
         if estimate_tokens(combined_context) > token_limit - 1000:
             combined_context = config.trim_context(combined_context, token_limit - 1000)
 
-        llm_response = await config.provider.ask(
+        llm_response = await config.ai_manager.ask(
             query=req.question,
             context_for_prompt=combined_context,
             persona=config.PERSONA_MAP.get("powellhomeschool"),
@@ -112,6 +112,7 @@ async def ask_question(req: QueryRequest, request: Request):
             memory=[]
         )
 
+        print(llm_response)
         total_elapsed = round((time.monotonic() - overall_start) * 1000, 2)  # milliseconds
         print(f"Time for db: {db_elapsed}")
         return {

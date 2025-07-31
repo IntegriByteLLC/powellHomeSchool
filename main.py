@@ -7,6 +7,7 @@ from Postgres.Routers import askRouter, pdfRouter, phonicsRouter, urlRouter, les
 from Postgres.config import config
 
 from Postgres.databaseConnection import get_db_pool, init_db
+from aiManager import AiManager
 
 app = FastAPI()
 db_tables: dict[str, Database] = {}
@@ -26,18 +27,8 @@ async def startup_event():
     config.db_pool = await get_db_pool()
     print("✅ Database initialized.")
 
+    # ✅ Preload DB tables
     TABLE_SUFFIXES = ["", "_pdf", "_urls"]
-    TABLE_SCHEMA = """
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            tag TEXT,
-            title TEXT,
-            text TEXT,
-            lookup VECTOR(1536)
-        )
-    """
-
-    await config.init_db_pool()
     async with config.db_pool.acquire() as conn:
         for suffix in TABLE_SUFFIXES:
             table = f"{config.BASE_TABLE}{suffix}"
@@ -48,6 +39,24 @@ async def startup_event():
                 db_pool=config.db_pool
             )
             print(f"✅ Ensured table exists: {table}")
+
+    # ✅ Initialize LLM manager (Gemini only)
+    config.ai_manager = AiManager(provider="gemini")
+
+    # ✅ Warmup request to reduce cold start latency
+    try:
+        print("⏳ Warming up Gemini model...")
+        await config.ai_manager.ask(
+            query="Hello, are you ready?",
+            context_for_prompt="Reply with 'Ready'.",
+            model=config.chatModel,
+            persona="system"
+        )
+        print("✅ Gemini warmed up and ready.")
+    except Exception as e:
+        print("⚠️ Gemini warmup failed:", e)
+
+
 
 @app.on_event("shutdown")
 async def shutdown():

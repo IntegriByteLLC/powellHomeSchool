@@ -1,7 +1,6 @@
 import os
 import asyncpg
 from dotenv import load_dotenv
-
 from aiManager import AiManager
 
 load_dotenv()
@@ -14,6 +13,7 @@ class Config:
         self.JWT_ALGORITHM = "HS256"
         self.BASE_TABLE = os.getenv("BASE_TABLE", "powellhomeschool")
         self.db_tables = {}
+        self.ai_manager = None   # ✅ Will hold global AiManager instance
 
         self.DB_CONFIG = {
             "user": os.getenv("DB_USER", "powellhomeschool"),
@@ -24,30 +24,25 @@ class Config:
         }
 
         self.MODEL_TOKEN_LIMITS = {
-            "gpt-4": 8192,
-            "gpt-4-0613": 8192,
-            "gpt-3.5-turbo": 4096,
-            "gpt-3.5-turbo-instruct": 4096,
-            "gpt-3.5-turbo-instruct-0914": 4096,
-            "gpt-3.5-turbo-1106": 16000,
-            "gpt-3.5-turbo-0125": 16000,
+            "gemini-2.0-flash": 128000,
+            "gemini-2.0-flash-lite": 128000,
             "default": 128000,
         }
 
-        self.provider = AiManager(provider="gemini")
-        self.chatModel = "gemini-1.5-flash-latest"
+        self.chatModel = "gemini-2.0-flash"   # ✅ switched to faster model
 
         self.PERSONA_MAP = {
             "powellhomeschool": (
                 "You are an educational assistant for Powell HomeSchool. "
                 "Use only the provided learning materials to answer questions. "
-                "Do not guess or respond outside the scope of Powell HomeSchool content. "
-                "If no relevant data is found, say: "
-                "\"I can only respond based on Powell HomeSchool’s materials.\""
+                "say what you need to sain in under 25 words"
+
+
             )
         }
 
-        self.db_pool = None  # pool initialized during startup
+        self.db_pool = None
+
     async def init_db_pool(self):
         if not self.db_pool:
             self.db_pool = await asyncpg.create_pool(**self.DB_CONFIG)
