@@ -12,7 +12,8 @@ class PhonicsLesson(BaseModel):
 
 class QueryRequest(BaseModel):
     question: str
-    model: str = ""
+    provider: Optional[str] = None
+    model: Optional[str] = None
 
 class LessonCreate(BaseModel):
     subject_id: UUID

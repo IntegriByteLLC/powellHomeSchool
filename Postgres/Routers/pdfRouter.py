@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, UploadFile, File, Header, HTTPException
+from fastapi import APIRouter, UploadFile, File, Header, HTTPException, Depends
 from powpow.ingestion import DataIngestion
 import fitz  # PyMuPDF
 import os, time, re, json
@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import aiofiles
 from sqlalchemy import text
 from sqlalchemy.future import select
+from sqlalchemy.orm import Session
 
 from Postgres.config import config
 from Postgres.databaseConnection import AsyncSessionLocal
